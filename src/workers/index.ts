@@ -1,0 +1,2 @@
+export { WorkerManager } from "./manager";
+
