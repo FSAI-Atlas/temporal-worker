@@ -1,7 +1,7 @@
-import { RegisteredWorkflow, TriggerType, WorkflowConfig, WorkflowConfigSchema } from "./types";
+import { RegisteredWorkflow, TriggerType} from "./types";
 
-// Central registry for all workflows and their configurations.
-// Each workflow defines its own namespace, taskQueue, and trigger.
+// Simple in-memory registry for tracking registered workflows.
+// Workflows are now discovered and managed by the WorkflowWatcher from MinIO.
 const workflowRegistry: RegisteredWorkflow[] = [];
 
 export function getRegisteredWorkflows(): RegisteredWorkflow[] {
@@ -20,24 +20,14 @@ export function getWorkflowByName(name: string): RegisteredWorkflow | undefined 
   return workflowRegistry.find((w) => w.name === name);
 }
 
-// Register a workflow from a config object
-export function registerWorkflow(config: WorkflowConfig): RegisteredWorkflow {
-  const validated = WorkflowConfigSchema.parse(config);
-
-  const existing = workflowRegistry.find((w) => w.name === validated.name);
+export function registerWorkflow(workflow: RegisteredWorkflow): void {
+  const existing = workflowRegistry.find((w) => w.name === workflow.name);
   if (existing) {
-    throw new Error(`Workflow ${validated.name} is already registered`);
+    // Update existing
+    Object.assign(existing, workflow);
+    return;
   }
-
-  const workflow: RegisteredWorkflow = {
-    name: validated.name,
-    namespace: validated.namespace,
-    taskQueue: validated.taskQueue,
-    trigger: validated.trigger,
-  };
-
   workflowRegistry.push(workflow);
-  return workflow;
 }
 
 export function unregisterWorkflow(name: string): boolean {
@@ -49,18 +39,6 @@ export function unregisterWorkflow(name: string): boolean {
   return false;
 }
 
-// Get unique namespace/taskQueue combinations
-export function getUniqueWorkerConfigs(): Array<{ namespace: string; taskQueue: string }> {
-  const seen = new Set<string>();
-  const configs: Array<{ namespace: string; taskQueue: string }> = [];
-
-  for (const workflow of workflowRegistry) {
-    const key = `${workflow.namespace}:${workflow.taskQueue}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      configs.push({ namespace: workflow.namespace, taskQueue: workflow.taskQueue });
-    }
-  }
-
-  return configs;
+export function clearRegistry(): void {
+  workflowRegistry.length = 0;
 }

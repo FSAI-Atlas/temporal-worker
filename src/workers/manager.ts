@@ -1,3 +1,4 @@
+import * as path from "path";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import { appConfig } from "../config";
 import { RegisteredWorkflow, getWorkerKey } from "../types";
@@ -11,10 +12,15 @@ interface ManagedWorker {
   workflows: string[];
 }
 
-// Manages multiple Temporal workers, one per unique namespace/taskQueue combination
+// Manages multiple Temporal workers, one per unique namespace/taskQueue combination.
 export class WorkerManager {
   private workers: Map<string, ManagedWorker> = new Map();
   private connection: NativeConnection | null = null;
+  private workflowsDir: string;
+
+  constructor(workflowsDir: string) {
+    this.workflowsDir = workflowsDir;
+  }
 
   private async getConnection(): Promise<NativeConnection> {
     if (!this.connection) {
@@ -25,21 +31,20 @@ export class WorkerManager {
     return this.connection;
   }
 
-  // Register a workflow and create/update its worker
   async registerWorkflow(workflow: RegisteredWorkflow): Promise<void> {
     const key = getWorkerKey(workflow.namespace, workflow.taskQueue);
     const existing = this.workers.get(key);
 
     if (existing) {
-      // Worker already exists for this namespace/taskQueue, just track the workflow
-      existing.workflows.push(workflow.name);
+      if (!existing.workflows.includes(workflow.name)) {
+        existing.workflows.push(workflow.name);
+      }
       console.log(
-        `Added workflow ${workflow.name} to existing worker (${workflow.namespace}:${workflow.taskQueue})`
+        `Added workflow ${workflow.name} to worker (${workflow.namespace}:${workflow.taskQueue})`
       );
       return;
     }
 
-    // Worker will be created when startAll is called
     this.workers.set(key, {
       worker: null as unknown as Worker,
       runPromise: null,
@@ -53,13 +58,15 @@ export class WorkerManager {
     );
   }
 
-  // Start all registered workers
   async startAll(): Promise<void> {
     const connection = await this.getConnection();
+    const workflowsIndexPath = path.join(this.workflowsDir, "index.ts");
+
+    console.log(`Loading workflows from: ${workflowsIndexPath}`);
 
     for (const [key, managed] of this.workers) {
       if (managed.worker) {
-        continue; // Already running
+        continue;
       }
 
       try {
@@ -67,7 +74,7 @@ export class WorkerManager {
           connection,
           namespace: managed.namespace,
           taskQueue: managed.taskQueue,
-          workflowsPath: require.resolve("../workflows"),
+          workflowsPath: workflowsIndexPath,
           activities,
           maxConcurrentActivityTaskExecutions: appConfig.worker.maxConcurrentActivities,
           maxConcurrentWorkflowTaskExecutions: appConfig.worker.maxConcurrentWorkflows,
@@ -75,7 +82,6 @@ export class WorkerManager {
 
         managed.worker = worker;
 
-        // Run worker in background (non-blocking), store promise for graceful shutdown
         managed.runPromise = worker.run().catch((error) => {
           console.error(`Worker ${key} stopped with error:`, error);
         });
@@ -90,24 +96,63 @@ export class WorkerManager {
     }
   }
 
-  // Stop all workers gracefully
+  // Restart a specific worker (used when workflows are updated)
+  async restartWorker(namespace: string, taskQueue: string): Promise<void> {
+    const key = getWorkerKey(namespace, taskQueue);
+    const managed = this.workers.get(key);
+
+    if (!managed || !managed.worker) {
+      return;
+    }
+
+    console.log(`Restarting worker ${key}...`);
+
+    // Shutdown existing worker
+    managed.worker.shutdown();
+    if (managed.runPromise) {
+      await managed.runPromise;
+    }
+
+    // Clear the worker reference
+    managed.worker = null as unknown as Worker;
+    managed.runPromise = null;
+
+    // Start new worker
+    const connection = await this.getConnection();
+    const workflowsIndexPath = path.join(this.workflowsDir, "index.ts");
+
+    const worker = await Worker.create({
+      connection,
+      namespace: managed.namespace,
+      taskQueue: managed.taskQueue,
+      workflowsPath: workflowsIndexPath,
+      activities,
+      maxConcurrentActivityTaskExecutions: appConfig.worker.maxConcurrentActivities,
+      maxConcurrentWorkflowTaskExecutions: appConfig.worker.maxConcurrentWorkflows,
+    });
+
+    managed.worker = worker;
+    managed.runPromise = worker.run().catch((error) => {
+      console.error(`Worker ${key} stopped with error:`, error);
+    });
+
+    console.log(`Worker ${key} restarted`);
+  }
+
   async stopAll(): Promise<void> {
     const runPromises: Promise<void>[] = [];
 
     for (const [key, managed] of this.workers) {
       if (managed.worker) {
-        // Signal worker to shutdown
         managed.worker.shutdown();
         console.log(`Shutdown signal sent to worker ${key}`);
 
-        // Collect run promises to wait for completion
         if (managed.runPromise) {
           runPromises.push(managed.runPromise);
         }
       }
     }
 
-    // Wait for all workers to finish
     await Promise.all(runPromises);
     this.workers.clear();
 
@@ -119,12 +164,10 @@ export class WorkerManager {
     console.log("All workers stopped");
   }
 
-  // Get list of all worker keys
   getWorkerKeys(): string[] {
     return Array.from(this.workers.keys());
   }
 
-  // Get status of all workers
   getStatus(): Record<string, { namespace: string; taskQueue: string; workflows: string[] }> {
     const status: Record<string, { namespace: string; taskQueue: string; workflows: string[] }> = {};
 
@@ -139,4 +182,3 @@ export class WorkerManager {
     return status;
   }
 }
-
