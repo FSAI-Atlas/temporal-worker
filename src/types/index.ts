@@ -2,6 +2,15 @@ import { z } from "zod";
 
 export type TriggerType = "schedule" | "polling" | "webhook" | "manual";
 
+// Webhook authentication types
+export const WebhookAuthConfigSchema = z.object({
+  type: z.enum(["bearer", "api-key", "basic"]),
+  token: z.string().min(1),
+  headerName: z.string().optional(),
+});
+
+export type WebhookAuthConfig = z.infer<typeof WebhookAuthConfigSchema>;
+
 // Configuration for a workflow including its Temporal settings and trigger
 export const WorkflowConfigSchema = z.object({
   name: z.string().min(1),
@@ -31,10 +40,11 @@ export const PollingTriggerConfigSchema = z.object({
 
 export type PollingTriggerConfig = z.infer<typeof PollingTriggerConfigSchema>;
 
-// Webhook trigger configuration
+// Webhook trigger configuration with optional auth
 export const WebhookTriggerConfigSchema = z.object({
   path: z.string().min(1),
   method: z.enum(["GET", "POST", "PUT", "DELETE"]).default("POST"),
+  auth: WebhookAuthConfigSchema.optional(),
 });
 
 export type WebhookTriggerConfig = z.infer<typeof WebhookTriggerConfigSchema>;

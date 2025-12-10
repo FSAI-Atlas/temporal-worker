@@ -1,6 +1,11 @@
 import express, { Express, Request, Response, Router } from "express";
 import { BaseTrigger } from "./base.trigger";
-import { RegisteredWorkflow, WebhookTriggerConfig, WebhookTriggerConfigSchema } from "../types";
+import { 
+  RegisteredWorkflow, 
+  WebhookTriggerConfig, 
+  WebhookTriggerConfigSchema,
+  WebhookAuthConfig 
+} from "../types";
 import { getClientForNamespace } from "../client";
 import { appConfig } from "../config";
 
@@ -94,8 +99,10 @@ export class WebhookTrigger extends BaseTrigger {
     await startServer();
 
     this.isRunning = true;
+    
+    const authInfo = this.config.auth ? ` (auth: ${this.config.auth.type})` : " (no auth)";
     console.log(
-      `Webhook trigger registered for ${this.workflow.name} at ${this.config.method} /webhooks${path} (${this.workflow.namespace}:${this.workflow.taskQueue})`
+      `Webhook trigger registered for ${this.workflow.name} at ${this.config.method} /webhooks${path}${authInfo}`
     );
   }
 
@@ -111,8 +118,73 @@ export class WebhookTrigger extends BaseTrigger {
     console.log(`Webhook trigger stopped for ${this.workflow.name}`);
   }
 
+  // Validate authentication for the request
+  private validateAuth(req: Request): { valid: boolean; error?: string } {
+    const auth = this.config.auth;
+
+    // No auth configured - allow all requests
+    if (!auth) {
+      return { valid: true };
+    }
+
+    switch (auth.type) {
+      case "bearer": {
+        const authHeader = req.headers.authorization;
+        if (!authHeader) {
+          return { valid: false, error: "Missing Authorization header" };
+        }
+        
+        const [type, token] = authHeader.split(" ");
+        if (type !== "Bearer" || token !== auth.token) {
+          return { valid: false, error: "Invalid bearer token" };
+        }
+        
+        return { valid: true };
+      }
+
+      case "api-key": {
+        const headerName = auth.headerName || "X-API-Key";
+        const apiKey = req.headers[headerName.toLowerCase()];
+        
+        if (!apiKey || apiKey !== auth.token) {
+          return { valid: false, error: `Invalid or missing ${headerName}` };
+        }
+        
+        return { valid: true };
+      }
+
+      case "basic": {
+        const authHeader = req.headers.authorization;
+        if (!authHeader) {
+          return { valid: false, error: "Missing Authorization header" };
+        }
+
+        const [type, credentials] = authHeader.split(" ");
+        if (type !== "Basic" || credentials !== auth.token) {
+          return { valid: false, error: "Invalid basic auth credentials" };
+        }
+
+        return { valid: true };
+      }
+
+      default:
+        return { valid: false, error: "Unknown auth type" };
+    }
+  }
+
   private createHandler() {
     return async (req: Request, res: Response) => {
+      // Validate authentication first
+      const authResult = this.validateAuth(req);
+      if (!authResult.valid) {
+        console.log(`Webhook auth failed for ${this.workflow.name}: ${authResult.error}`);
+        res.status(401).json({
+          success: false,
+          error: authResult.error,
+        });
+        return;
+      }
+
       try {
         const workflowId = await this.startWorkflow(req.body, req.query, req.headers);
 
