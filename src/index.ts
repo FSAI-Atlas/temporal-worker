@@ -6,6 +6,9 @@ import { WorkflowWatcher } from "./services/watcher";
 import { closeAllClients } from "./client";
 import { appConfig } from "./config";
 import { RegisteredWorkflow } from "./types";
+import logger, { createLogger } from "./lib/logger";
+
+const log = createLogger("main");
 
 let workerManager: WorkerManager;
 let triggerManager: TriggerManager;
@@ -21,7 +24,7 @@ function generateWorkflowsIndex(workflowsDir: string, workflows: RegisteredWorkf
 
   const indexPath = path.join(workflowsDir, "index.ts");
   fs.writeFileSync(indexPath, indexContent);
-  console.log(`Generated workflows index with ${workflows.length} workflows`);
+  log.info({ count: workflows.length }, "Generated workflows index");
 }
 
 // Handle workflow changes from the watcher
@@ -40,33 +43,31 @@ async function handleWorkflowChanges(
   for (const workflow of added) {
     await workerManager.registerWorkflow(workflow);
     triggerManager.register(workflow);
-    console.log(`New workflow registered: ${workflow.name}`);
+    log.info({ workflow: workflow.name }, "New workflow registered");
   }
 
   // Handle updated workflows - restart affected workers
   for (const workflow of updated) {
-    console.log(`Workflow updated: ${workflow.name}`);
+    log.info({ workflow: workflow.name }, "Workflow updated");
     await workerManager.restartWorker(workflow.namespace, workflow.taskQueue);
   }
 
   // Handle removed workflows
   for (const name of removed) {
-    console.log(`Workflow removed: ${name}`);
-    // Note: Full cleanup would require tracking which triggers belong to which workflow
+    log.info({ workflow: name }, "Workflow removed");
   }
 
   // If this is the first time we have workflows, start everything
   if (added.length > 0 && triggerManager.getRegisteredWorkflows().length === added.length) {
     await triggerManager.startAll();
     await workerManager.startAll();
-    console.log("Workers and triggers started for initial workflows");
+    log.info("Workers and triggers started for initial workflows");
   }
 }
 
 async function main() {
-  console.log("Starting Temporal Generic Worker...");
-  console.log(`MinIO endpoint: ${appConfig.minio.endPoint}:${appConfig.minio.port}`);
-  console.log(`MinIO bucket: ${appConfig.minio.bucket}`);
+  log.info("Starting Temporal Generic Worker...");
+  log.info({ endpoint: `${appConfig.minio.endPoint}:${appConfig.minio.port}`, bucket: appConfig.minio.bucket }, "MinIO config");
 
   // Initialize components
   workflowWatcher = new WorkflowWatcher();
@@ -90,39 +91,42 @@ async function main() {
     for (const workflow of workflows) {
       await workerManager.registerWorkflow(workflow);
       triggerManager.register(workflow);
-      console.log(
-        `Registered: ${workflow.name} (${workflow.namespace}:${workflow.taskQueue}, trigger: ${workflow.trigger.type})`
-      );
+      log.info({
+        workflow: workflow.name,
+        namespace: workflow.namespace,
+        taskQueue: workflow.taskQueue,
+        trigger: workflow.trigger.type,
+      }, "Workflow registered");
     }
 
     // Start triggers
     await triggerManager.startAll();
-    console.log("Trigger status:", JSON.stringify(triggerManager.getStatus(), null, 2));
+    log.info({ status: triggerManager.getStatus() }, "Triggers started");
 
     // Start workers
     await workerManager.startAll();
-    console.log("Worker status:", JSON.stringify(workerManager.getStatus(), null, 2));
+    log.info({ status: workerManager.getStatus() }, "Workers started");
   } else {
-    console.log("No workflows found in MinIO bucket.");
-    console.log("Deploy workflows using the CLI: workflow-cli deploy ./my-workflow");
-    console.log("Watching for new workflows...");
+    log.warn("No workflows found in MinIO bucket");
+    log.info("Deploy workflows using the CLI: workflow-cli deploy ./my-workflow");
+    log.info("Watching for new workflows...");
   }
 
-  console.log("System running. Press Ctrl+C to shutdown.");
+  log.info("System running. Press Ctrl+C to shutdown.");
 }
 
 async function shutdown() {
-  console.log("\nShutting down gracefully...");
+  log.info("Shutting down gracefully...");
 
   try {
     workflowWatcher.stop();
     await triggerManager.stopAll();
     await workerManager.stopAll();
     await closeAllClients();
-    console.log("Shutdown complete");
+    log.info("Shutdown complete");
     process.exit(0);
   } catch (error) {
-    console.error("Error during shutdown:", error);
+    log.error(error, "Error during shutdown");
     process.exit(1);
   }
 }
@@ -131,11 +135,11 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 main().catch((error) => {
-  console.error("Fatal error:", error);
+  log.fatal(error, "Fatal error");
   process.exit(1);
 });
 
-export { workerManager, triggerManager, workflowWatcher };
+export { workerManager, triggerManager, workflowWatcher, logger };
 export * from "./triggers";
 export * from "./types";
 export * from "./client";

@@ -18,6 +18,8 @@
     "express": "^4.21.1",
     "extract-zip": "^2.0.1",
     "minio": "^8.0.2",
+    "pino": "^9.5.0",
+    "pino-pretty": "^11.3.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
